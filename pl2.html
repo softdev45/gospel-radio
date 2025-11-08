@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Persistent Audio Stream (Flask)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- Lucide Icons (Must remain in module for ES module imports) -->
+    <script type="module">
+        import {{ createIcons, Play, Pause, Folder, Volume2, Bluetooth, Server, Upload }} from 'https://unpkg.com/lucide@latest?module';
+        // Global access to createIcons is needed for dynamic updates
+        window.lucide = {{ createIcons }}; 
+        // Create icons after DOM loads
+        document.addEventListener('DOMContentLoaded', () => {{
+             window.lucide.createIcons({{ icons: {{ Play, Pause, Folder, Volume2, Bluetooth, Server, Upload }} }});
+        }});
+    </script>
+    <style>
+        :root {{
+            font-family: 'Inter', sans-serif;
+        }}
+        .scroll-list {{
+            max-height: 30vh;
+            overflow-y: auto;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }}
+        .scroll-list::-webkit-scrollbar {{
+            display: none;
+        }}
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex items-center justify-center p-4">
+
+    <div id="app-container" class="w-full max-w-sm bg-gray-800 rounded-xl shadow-2xl p-6 flex flex-col space-y-4">
+
+        <!-- Header -->
+        <header class="text-center space-y-1 pb-2 border-b border-gray-700">
+            <div class="flex items-center justify-center text-indigo-400">
+                <i data-lucide="bluetooth" class="w-8 h-8 mr-2"></i>
+                <h1 class="text-3xl font-bold">Radio Gospel</h1>
+            </div>
+            <p class="text-sm text-gray-400">Dobra Nowina</p>
+        </header>
+
+        <!-- Status Info Box -->
+        <!-- <div class="bg-gray-700 p-3 rounded-lg text-xs text-green-300 border border-green-600">
+            <i data-lucide="server" class="w-4 h-4 inline mr-1 text-green-400"></i>
+            <span class="font-semibold">backend:</span> flask server is managing track data and file storage.
+        </div> -->
+        
+        <!-- Persistence Info Box -->
+        <!-- <div class="bg-gray-700 p-3 rounded-lg text-xs text-yellow-300 border border-yellow-600">
+            <i data-lucide="upload" class="w-4 h-4 inline mr-1 text-yellow-400"></i>
+            <span class="font-semibold">Uploads:</span> Local files are now sent to and served from the Flask server.
+        </div> -->
+        
+        <!-- User ID Display (Simulated - No Auth) -->
+        <!-- <div class="bg-gray-700 p-2 rounded-lg text-xs text-indigo-300 border border-indigo-700">
+            <span class="font-semibold">Status:</span> <span id="user-id-display" class="break-all text-gray-400">Connected to Flask Server</span>
+        </div> -->
+
+        <!-- Upload Section -->
+        <div class="space-y-3">
+            <!-- Handlers for inline functions must be global -->
+            <input type="file" id="audio-upload" accept="audio/*" multiple class="hidden" onchange="handleFileUpload(event)">
+            <button onclick="document.getElementById('audio-upload').click()"
+                    class="w-full flex items-center justify-center px-4 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-lg font-semibold transition duration-200 shadow-md shadow-indigo-500/50">
+                <i data-lucide="upload" class="w-5 h-5 mr-2"></i>
+                Upload Audio File
+            </button>
+        </div>
+
+        <!-- Playlist Section -->
+        <div class="space-y-3">
+            <h2 class="text-xl font-semibold text-gray-300">Playlist (<span id="track-count">0</span>)</h2>
+            <div id="playlist-container" class="scroll-list bg-gray-700/50 rounded-lg p-2 border border-gray-700">
+                <!-- Tracks will be inserted here -->
+                <p id="loading-message" class="text-center text-indigo-400 py-4">Loading tracks from server...</p>
+                <p id="empty-message" class="text-center text-gray-500 py-4 hidden">Playlist is empty. Upload an audio file!</p>
+            </div>
+        </div>
+
+        <!-- Now Playing & Controls -->
+        <div id="now-playing-card" class="bg-gray-700 p-4 rounded-xl space-y-3 opacity-0 transition duration-300 pointer-events-none">
+            <div class="flex items-center space-x-3">
+                <div class="bg-indigo-500 p-2 rounded-full">
+                    <i data-lucide="volume-2" class="w-5 h-5 text-white"></i>
+                </div>
+                <div class="flex-grow min-w-0">
+                    <p class="text-xs font-medium text-indigo-300 uppercase">Now Playing</p>
+                    <p id="current-track-name" class="text-white font-bold truncate">No Track Loaded</p>
+                </div>
+            </div>
+
+            <!-- Progress Bar (Simple) -->
+            <div class="h-1 bg-gray-600 rounded-full">
+                <div id="progress-bar" class="h-1 bg-indigo-400 rounded-full" style="width: 0%;"></div>
+            </div>
+
+            <!-- Main Controls -->
+            <div class="flex justify-center items-center space-x-6 pt-2">
+                <!-- Handlers for inline functions must be global -->
+                <button id="play-pause-btn" onclick="togglePlayPause()" disabled
+                        class="p-4 bg-indigo-500 text-white rounded-full transition duration-150 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-500/30">
+                    <i data-lucide="play" id="play-pause-icon" class="w-6 h-6"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden Audio Element -->
+    <audio id="audio-player"></audio>
+
+    <!-- Use standard script block for global functions accessed by inline HTML -->
+    <script>
+        // Global element references
+        const audioPlayer = document.getElementById('audio-player');
+        const playlistContainer = document.getElementById('playlist-container');
+        const emptyMessage = document.getElementById('empty-message');
+        const loadingMessage = document.getElementById('loading-message');
+        const trackCount = document.getElementById('track-count');
+        const nowPlayingCard = document.getElementById('now-playing-card');
+        const currentTrackName = document.getElementById('current-track-name');
+        const playPauseBtn = document.getElementById('play-pause-btn');
+        const playPauseIcon = document.getElementById('play-pause-icon');
+        const progressBar = document.getElementById('progress-bar');
+        
+        // Global Application Variables
+        let playlist = [];
+        let currentTrackIndex = -1;
+        
+        // Helper function to call Lucide icon creation (must be accessible globally)
+        function refreshIcons() {
+            if (window.lucide && window.lucide.createIcons) {
+                window.lucide.createIcons();
+            }
+        }
+        
+        // --- CORE APPLICATION LOGIC (Global scope) ---
+        
+        function resetPlayerState() {
+             audioPlayer.pause();
+             audioPlayer.src = '';
+             currentTrackName.textContent = 'No Track Loaded';
+             
+             const iconElement = document.getElementById('play-pause-icon');
+             iconElement.innerHTML = '';
+             iconElement.setAttribute('data-lucide', 'play');
+             refreshIcons(); // Re-render icon
+
+             playPauseBtn.disabled = true;
+             currentTrackIndex = -1;
+             progressBar.style.width = '0%';
+             nowPlayingCard.classList.remove('opacity-100');
+             nowPlayingCard.classList.add('pointer-events-none', 'opacity-0');
+             renderPlaylist();
+        }
+
+        /**
+         * Renders the current playlist in the UI.
+         */
+        function renderPlaylist() {
+            playlistContainer.innerHTML = '';
+            
+            if (playlist.length === 0) {
+                emptyMessage.classList.remove('hidden');
+                trackCount.textContent = '0';
+                return;
+            }
+
+            emptyMessage.classList.add('hidden');
+            trackCount.textContent = playlist.length;
+
+            playlist.forEach((track, index) => {
+                const isCurrent = index === currentTrackIndex;
+                
+                // Icon depends on whether the track URL is local (streamed from Flask) or remote (external)
+                const isStreamed = track.url.startsWith('/api/stream/');
+                const sourceTypeIcon = isStreamed 
+                    ? `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload text-yellow-500 mr-2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>`
+                    : `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-server text-green-400 mr-2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" x2="6" y1="6" y2="6"/><line x1="6" x2="6" y1="18" y2="18"/></svg>`;
+
+                const item = document.createElement('div');
+                item.className = `flex items-center justify-between p-2 my-1 rounded-lg cursor-pointer transition duration-150 ${isCurrent ? 'bg-indigo-600 font-bold' : 'hover:bg-gray-700'}`;
+                item.onclick = () => {
+                    loadTrack(index);
+                    if (audioPlayer.paused) {
+                        playAudio();
+                    }
+                };
+                item.innerHTML = `
+                    <div class="flex items-center min-w-0">
+                        ${sourceTypeIcon}
+                        <span class="truncate pr-4 text-sm">${track.name}</span>
+                    </div>
+                    <button class="flex-shrink-0 text-red-400 hover:text-red-300 ml-2" onclick="event.stopPropagation(); removeTrack('${track.id}');">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-circle"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+                    </button>
+                `;
+                playlistContainer.appendChild(item);
+            });
+            // Re-render Lucide icons after adding new HTML content
+            refreshIcons();
+        }
+
+        /**
+         * Loads a track into the audio player.
+         */
+        function loadTrack(index) {
+            if (index < 0 || index >= playlist.length) return;
+
+            currentTrackIndex = index;
+            const track = playlist[currentTrackIndex];
+            
+            // The track.url is now either an external URL or the /api/stream/ endpoint
+            audioPlayer.src = track.url; 
+            currentTrackName.textContent = track.name;
+            playPauseBtn.disabled = false;
+            audioPlayer.load();
+            renderPlaylist(); // Update the UI to highlight the current track
+            
+            nowPlayingCard.classList.add('opacity-100');
+            nowPlayingCard.classList.remove('pointer-events-none', 'opacity-0');
+        }
+
+        /**
+         * Toggles between play and pause states (Global function).
+         */
+        window.togglePlayPause = function() {
+            if (audioPlayer.paused) {
+                playAudio();
+            } else {
+                pauseAudio();
+            }
+        }
+
+        /**
+         * Plays the current audio track.
+         */
+        function playAudio() {
+            if (audioPlayer.src) {
+                audioPlayer.play().catch(error => {
+                    console.error("Error attempting to play audio:", error);
+                    showMessage("Playback prevented by browser. Please interact with the page first.");
+                });
+                document.getElementById('play-pause-icon').innerHTML = '';
+                document.getElementById('play-pause-icon').setAttribute('data-lucide', 'pause');
+                refreshIcons();
+            }
+        }
+
+        /**
+         * Pauses the current audio track.
+         */
+        function pauseAudio() {
+            audioPlayer.pause();
+            document.getElementById('play-pause-icon').innerHTML = '';
+            document.getElementById('play-pause-icon').setAttribute('data-lucide', 'play');
+            refreshIcons();
+        }
+
+        /**
+         * Plays the next track in the playlist.
+         */
+        function playNext() {
+            if (playlist.length < 1) return;
+            let nextIndex = (currentTrackIndex + 1) % playlist.length;
+            loadTrack(nextIndex);
+            playAudio();
+        }
+
+        // --- BACKEND INTERACTION (Global functions) ---
+        
+        /**
+         * Fetches the current track list from the Flask API.
+         */
+        async function loadTracks() {
+            loadingMessage.classList.remove('hidden');
+            emptyMessage.classList.add('hidden');
+            try {
+                const response = await fetch('/api/tracks');
+                if (!response.ok) throw new Error('Failed to fetch tracks from Flask server.');
+                
+                const serverTracks = await response.json();
+                playlist = serverTracks; // Use server list directly
+
+                
+                // Auto-load the first track if the player is uninitialized
+                if (currentTrackIndex === -1 && playlist.length > 0) {
+                    loadTrack(0);
+                    pauseAudio(); 
+										setTimeout(function() {
+   													 playAudio();
+															}, 2000);
+										// playAudio();
+                }
+                
+                // If the currently playing track was removed from the server, reset player state
+                if (currentTrackIndex !== -1 && !playlist.find(t => t.id === playlist[currentTrackIndex]?.id)) {
+                    resetPlayerState();
+                }
+
+            } catch (error) {
+                console.error("API Fetch Error:", error);
+                showMessage(`Server Error: ${error.message}`);
+            } finally {
+                loadingMessage.classList.add('hidden');
+                renderPlaylist();
+            }
+        }
+
+
+        /**
+         * Handles the selection of audio files and sends them as FormData to the Flask API (Global function).
+         */
+        window.handleFileUpload = async function(event) {
+            const files = event.target.files;
+            if (files.length === 0) return;
+            
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const formData = new FormData();
+                formData.append('file', file); // CRITICAL: send the actual file
+                formData.append('name', file.name); 
+                
+                try {
+                    const response = await fetch('/api/tracks', {
+                        method: 'POST',
+                        // NOTE: Do NOT set 'Content-Type': 'multipart/form-data'. The browser handles this.
+                        body: formData 
+                    });
+
+                    if (!response.ok) throw new Error('Failed to add track to server.');
+
+                    // The server saves the file and returns the metadata with the new stream URL.
+                    
+                    // Refresh the playlist from the server
+                    await loadTracks();
+
+                } catch (error) {
+                    console.error("Error adding track:", error);
+                    showMessage(`Could not save track ${file.name} to server.`);
+                }
+            }
+        }
+
+        /**
+         * Removes a track from the playlist and server storage via the Flask API (Global function).
+         */
+        window.removeTrack = async function(trackId) {
+            
+            // Check if the removed track is the currently playing one
+            if (currentTrackIndex !== -1 && playlist[currentTrackIndex]?.id === trackId) {
+                resetPlayerState();
+            }
+            
+            try {
+                const response = await fetch(`/api/tracks/${trackId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) throw new Error('Failed to delete track from server.');
+
+                // Refresh the playlist from the server
+                await loadTracks();
+            } catch (error) {
+                console.error("Error deleting track:", error);
+                showMessage("Failed to remove track from server.");
+            }
+        }
+
+
+        // --- Event Listeners for Audio Player State ---
+
+        // Update progress bar
+        audioPlayer.addEventListener('timeupdate', () => {
+            const percentage = (audioPlayer.currentTime / audioPlayer.duration) * 100;
+            progressBar.style.width = `${percentage || 0}%`;
+        });
+
+        // Handle track ending (autoplay next)
+        audioPlayer.addEventListener('ended', () => {
+            playNext();
+        });
+
+        // Function to display temporary messages (instead of alert)
+        function showMessage(message) {
+            const messageBox = document.createElement('div');
+            messageBox.className = 'fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-yellow-500 text-gray-900 px-4 py-2 rounded-lg shadow-xl font-medium z-50 transition duration-300';
+            messageBox.textContent = message;
+            document.body.appendChild(messageBox);
+            setTimeout(() => {
+                messageBox.style.opacity = '0';
+                messageBox.style.transform = 'translate(-50%, 20px)';
+                messageBox.addEventListener('transitionend', () => messageBox.remove());
+            }, 3000);
+        }
+
+        // Initial setup - Start loading tracks from Flask server when the page is ready
+        document.addEventListener('DOMContentLoaded', loadTracks);
+    </script>
+</body>
+</html>
